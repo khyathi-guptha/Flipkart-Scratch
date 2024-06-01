@@ -1,25 +1,61 @@
-from bs4 import BeautifulSoup  #Importing the Beautiful Soup Library
-import requests				   #Importing the requests library
-import time					   #Importing the time library
-import csv					   #Importing the csv module
+import sys
+import pandas as pd
+from loguru import logger
+from selenium.webdriver import Chrome
+from utils.utils_company_details import get_company_details
+from utils.utils_find_links import get_first_site_link
+from utils.utils_global import (
+    get_companies_dataframe,
+    managed_selenium_driver,
+    close_current_tab_and_switch_to_new_one,
+    get_random_filename,
+    write_dict_to_csv, get_all_states_of_india,
+)
+from utils.utils_google_page import get_google_page
+from utils.utils_owner_details import get_owner_details
+from utils.utils_website_scraper import Company
+def scrape_from_web(driver: Chrome, company: pd.Series, filename: str, states: list):
+    link = get_first_site_link(driver=driver)
+    if not isinstance(link, str):
+        return None
+    company_instance = Company(
+        driver=driver,
+        gstin=company.GSTIN,
+        company_name=company.COMPANY_NAME,
+        page_link=link,
+        states=states
+    )
+    scraped_data = company_instance.get_scraped_data()
+    scraped_data.update(get_owner_details(scraped_data))
+    scraped_data.update(
+        get_company_details(
+            driver=driver, company_name=scraped_data.get("company name")
+        )
+    )
+    logger.info(scraped_data)
+    write_dict_to_csv(file_path=filename, data_dict=scraped_data)
 
-response = requests.get('https://www.flipkart.com/search?q=nokia+smartphones&sid=tyy%2C4io&as=on&as-show=on&otracker=AS_QueryStore_OrganicAutoSuggest_0_10_na_na_pr&otracker1=AS_QueryStore_OrganicAutoSuggest_0_10_na_na_pr&as-pos=0&as-type=RECENT&suggestionId=nokia+smartphones&requestId=675612e2-512b-4d0e-8b75-6bdf91921d7c&as-backfill=on')
+def main(input_file_name: str, filename: str, offset: int):
+    companies = get_companies_dataframe(path=input_file_name)
+    if not isinstance(companies, pd.DataFrame):
+        sys.exit()
 
-soup = BeautifulSoup(response.text, 'lxml')
-mname, mrating, mprice, mdesc = list(), list(), list(), list()
-mobile_name = soup.find_all(class_='_3wU53n')
-rating = soup.find_all(class_='hGSR34')
-price = soup.find_all(class_='_1vC4OE _2rQ-NK')
-description = soup.find_all(class_='vFw0gD')
+    with managed_selenium_driver() as driver:
+        for index, company in companies.iterrows():
+            if int(index) < offset:
+                continue
+            if get_google_page(driver=driver, company=company):
+                states = get_all_states_of_india(path="uploads/states.csv")
+                scrape_from_web(driver=driver, company=company, filename=filename, states=states)
+                close_current_tab_and_switch_to_new_one(driver)
+            else:
+                return None
 
-for a,b,c,d in zip(mobile_name, rating, price, description):
-	mname.append(a.get_text())
-	mrating.append(b.get_text())
-	mprice.append(c.get_text())
-	mdesc.append(d.get_text())
-
-with open('flipkart.csv','w',encoding="utf-8", newline = '') as csvfile:
-	writer = csv.writer(csvfile)
-	writer.writerow(['Mobile Name', 'Ratings', 'Pricing', 'Description'])
-	for a,b,c,d in zip(mname, mrating, mprice, mdesc):
-		writer.writerow([a.strip(), b.strip(), c.strip(), d.strip()])
+if __name__ == "__main__":
+    input_folder_path = "uploads/"
+    output_folder_path = "shared/outgoing/"
+    input_file = f"{input_folder_path}companies.csv"
+    output_file = get_random_filename(
+        path=output_folder_path, size=25, extension=".csv"
+    )
+    main(input_file_name=input_file, filename=output_file, offset=0)
